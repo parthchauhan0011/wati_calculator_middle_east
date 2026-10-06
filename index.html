@@ -131,6 +131,16 @@
   .receipt{background:var(--card);border:1px solid var(--rule);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
   .r-head{padding:22px 24px 18px;background:var(--green-soft)}
   .r-head h2{font-size:1.6rem;margin-top:6px}
+  .planpick{display:flex;gap:5px;margin-top:13px;background:rgba(255,255,255,.55);
+    border-radius:999px;padding:4px}
+  .planpick button{flex:1;font-family:var(--font);font-size:12px;font-weight:600;padding:6px 4px;
+    border:0;background:transparent;color:var(--ink-soft);cursor:pointer;border-radius:999px;white-space:nowrap}
+  .planpick button[aria-pressed="true"]{background:var(--black);color:#fff}
+  .planpick button:focus-visible{outline:2px solid var(--black);outline-offset:1px}
+  .pinned{background:var(--yellow);color:var(--black);font-size:12px;font-weight:500;
+    padding:10px 24px;line-height:1.45}
+  .pinned[hidden]{display:none}
+  .pinned b{font-weight:700}
   .verdict{margin:11px 0 0;font-size:.88rem;color:var(--ink-soft)}
   .verdict b{color:var(--black);font-weight:700}
   .warnbar{background:var(--warn);color:#fff;font-size:12px;font-weight:500;padding:9px 24px;line-height:1.4}
@@ -434,7 +444,14 @@
         <span class="label">Estimated monthly cost</span>
         <h2 id="planName">Wati Pro</h2>
         <p class="verdict" id="verdict"></p>
+        <div class="planpick" id="planPick" role="group" aria-label="Which plan to quote">
+          <button type="button" data-plan="auto" aria-pressed="true">Best fit</button>
+          <button type="button" data-plan="growth" aria-pressed="false">Growth</button>
+          <button type="button" data-plan="pro" aria-pressed="false">Pro</button>
+          <button type="button" data-plan="business" aria-pressed="false">Business</button>
+        </div>
       </div>
+      <div class="pinned" id="pinned" hidden></div>
       <div class="warnbar" id="warnbar" hidden></div>
       <div class="lines" id="lines"></div>
       <div class="totals">
@@ -474,6 +491,9 @@
       1 July 2026, and are charged on the recipient's country. Each plan tier has its own rates —
       the higher tiers are cheaper per message.</li>
     <li>Message rates are quoted in USD on the rate card. Where the plan is billed in another currency, the two are converted into your chosen output currency at today's rate, shown under question 8. Service messages have their own per-country rate, lower than the utility rate.</li>
+    <li>The estimate picks the cheapest plan that meets your requirements, but you can pin a specific
+      plan in the receipt to quote a higher tier. If a pinned plan can't cover the requirements entered,
+      the costs it can't carry are left out of the total and flagged above it.</li>
     <li>Growth's 15,000-broadcast monthly cap is checked against marketing plus utility volume.
       Authentication messages are API-triggered one-to-one and aren't treated as broadcasts. Pro and
       Business have no broadcast cap.</li>
@@ -546,6 +566,7 @@
     triggers:2000, aiCredits:0,
     needAdvanced:false, needShopify:false,
     cycle:"annual",
+    planPick:"auto",
     outCcy: CONFIG.planCcy
   };
 
@@ -826,7 +847,8 @@
   function render(){
     var all = {};
     PLAN_ORDER.forEach(function(k){ all[k] = estimate(k); });
-    var pick = recommend(all);
+    var best = recommend(all);
+    var pick = (state.planPick === "auto") ? best : all[state.planPick];
 
     var cname = NAMES[state.country] || state.country;
     $("countryHint").innerHTML = "On " + pick.plan.label + ", marketing to " + cname + " costs " +
@@ -842,7 +864,13 @@
       : "Growth covers up to 3. Pro and Business include 5.";
 
     $("planName").textContent = "Wati " + pick.plan.label;
-    $("verdict").innerHTML = verdictText(pick, all);
+    $("verdict").innerHTML = (state.planPick === "auto")
+      ? verdictText(pick, all)
+      : pinnedVerdict(pick, best);
+    Array.prototype.forEach.call($("planPick").children, function(b){
+      b.setAttribute("aria-pressed", String(b.dataset.plan === state.planPick));
+    });
+    renderPinned(pick, best);
 
     var wb = $("warnbar");
     if (!FX.live && state.outCcy !== CONFIG.planCcy){
@@ -935,6 +963,40 @@
     box.appendChild(st);
   }
 
+  // Quoting a tier above what the inputs require is a normal sales move, so the
+  // override always honours the choice. It only warns when the pinned plan
+  // physically cannot do the job, because then the total understates the truth.
+  function pinnedVerdict(pick, best){
+    var bits = ["You've pinned <b>" + pick.plan.label + "</b>."];
+    if (best.key === pick.key){
+      bits.push("That's also the cheapest plan that fits.");
+    } else {
+      var diff = pick.totalOut - best.totalOut;
+      bits.push("Cheapest that fits is <b>" + best.plan.label + "</b> at " + fmtOut(best.totalOut) +
+        ", so this is " + fmtOut(Math.abs(diff)) + (diff >= 0 ? " more" : " less") + " a month.");
+    }
+    return bits.join(" ");
+  }
+
+  function renderPinned(pick, best){
+    var el = $("pinned");
+    if (state.planPick === "auto" || pick.eligible){ el.hidden = true; return; }
+    var lines = pick.reasons.slice();
+    // Costs this plan cannot carry are silently absent from the bill — say so.
+    var missing = [];
+    if (state.agents > pick.plan.seats && pick.plan.extraSeat === null){
+      missing.push((state.agents - pick.plan.seats) + " extra " +
+        (state.agents - pick.plan.seats === 1 ? "user is" : "users are") + " not priced in");
+    }
+    if (state.numbers > 1 && pick.plan.numbers !== null){
+      missing.push((state.numbers - 1) + " extra WhatsApp " +
+        (state.numbers - 1 === 1 ? "number is" : "numbers are") + " not priced in");
+    }
+    el.hidden = false;
+    el.innerHTML = "<b>Heads up \u2014 " + pick.plan.label + " can't cover these requirements.</b> " +
+      lines.join(" ") + (missing.length ? " The total below excludes them: " + missing.join(", ") + "." : "");
+  }
+
   function verdictText(pick, all){
     if (!pick.eligible){
       return "None of the standard plans covers this, so it needs a custom quote. Closest fit shown.";
@@ -971,7 +1033,9 @@
       top.className = "p-top";
       var h = document.createElement("h3"); h.textContent = e.plan.label;
       top.appendChild(h);
-      if (e.key === pick.key && e.eligible){
+      if (state.planPick !== "auto" && e.key === state.planPick){
+        var pin = document.createElement("span"); pin.className = "tag"; pin.textContent = "Quoting"; top.appendChild(pin);
+      } else if (e.key === pick.key && e.eligible){
         var t = document.createElement("span"); t.className = "tag"; t.textContent = "Best fit"; top.appendChild(t);
       } else if (!e.eligible){
         var no = document.createElement("span"); no.className = "tag no"; no.textContent = "Doesn't fit"; top.appendChild(no);
@@ -1049,6 +1113,10 @@
       state.needAdvanced = p.advanced;
       render();
     });
+  });
+
+  Array.prototype.forEach.call($("planPick").children, function(b){
+    b.addEventListener("click", function(){ state.planPick = b.dataset.plan; render(); });
   });
 
   $("needAdvanced").addEventListener("change", function(){ state.needAdvanced = this.checked; render(); });
@@ -1130,7 +1198,11 @@
     }
     var out = [];
     out.push("WATI COST ESTIMATE \u2014 " + CONFIG.region.toUpperCase() + " \u2014 " + new Date().toLocaleDateString());
-    out.push("Recommended plan: " + p.plan.label + " (" + cycleSub() + ")");
+    out.push((state.planPick === "auto" ? "Recommended plan: " : "Quoted plan: ") +
+      p.plan.label + " (" + cycleSub() + ")");
+    if (state.planPick !== "auto" && !p.eligible){
+      out.push("NOTE: this plan does not meet every requirement entered \u2014 " + p.reasons.join(" "));
+    }
     out.push("Customers in: " + (NAMES[state.country] || state.country));
     out.push("Quoted in: " + state.outCcy + (state.outCcy === CONFIG.planCcy ? "" :
       "  (Wati bills this region in " + CONFIG.planCcy + ")"));
